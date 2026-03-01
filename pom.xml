@@ -88,6 +88,7 @@
         <module>plugin/trino-kafka</module>
         <module>plugin/trino-kafka-event-listener</module>
         <module>plugin/trino-lakehouse</module>
+        <module>plugin/trino-lakevilla</module>
         <module>plugin/trino-ldap-group-provider</module>
         <module>plugin/trino-loki</module>
         <module>plugin/trino-mariadb</module>

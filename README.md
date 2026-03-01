@@ -26,6 +26,14 @@
   /></a>
 </p>
 
+## LakeVilla Proof Of Concept Intgeration.
+
+Located in plugin/trino-lakevilla.
+
+Please compile the [LakeVilla](https://github.com/goetztj/LakeVilla) library and place it into the corresponding folder in plugin/trino-lakevilla/libs/...
+
+Hermitage was tested via the native LakeVillaTransactionManager class. The corresponding test cases simulate these scenarios and require debuggers and a running MinIO backend.
+
 ## Development
 
 Learn about development for all Trino organization projects:
