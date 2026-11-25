@@ -26,13 +26,23 @@
   /></a>
 </p>
 
-## LakeVilla Proof Of Concept Intgeration.
+## LakeVilla integration
 
-Located in plugin/trino-lakevilla.
+This fork contains the LakeVilla connector (`plugin/trino-lakevilla`): SQL
+access to Delta Lake tables with LakeVilla's multi-statement, multi-table
+transactions, through the native [LakeVilla](https://github.com/goetztj/LakeVilla)
+library (JNI).
 
-Please compile the [LakeVilla](https://github.com/goetztj/LakeVilla) library and place it into the corresponding folder in plugin/trino-lakevilla/libs/...
+See [plugin/trino-lakevilla/README.md](plugin/trino-lakevilla/README.md) for
+building, installing and configuring the connector, its SQL support and
+transaction semantics. A Docker environment (MinIO + Trino with LakeVilla) and
+an end-to-end SQL test suite are in `plugin/trino-lakevilla/docker`:
 
-Hermitage was tested via the native LakeVillaTransactionManager class. The corresponding test cases simulate these scenarios and require debuggers and a running MinIO backend.
+```bash
+cd plugin/trino-lakevilla/docker
+./build.sh && docker compose up -d
+docker compose exec trino trino --catalog lakevilla
+```
 
 ## Development
 

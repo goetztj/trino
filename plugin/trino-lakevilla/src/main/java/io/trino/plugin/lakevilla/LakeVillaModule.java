@@ -18,8 +18,6 @@ import com.google.inject.Module;
 import com.google.inject.Scopes;
 
 import static io.airlift.configuration.ConfigBinder.configBinder;
-import static io.airlift.json.JsonCodec.listJsonCodec;
-import static io.airlift.json.JsonCodecBinder.jsonCodecBinder;
 
 public class LakeVillaModule
         implements Module
@@ -27,13 +25,14 @@ public class LakeVillaModule
     @Override
     public void configure(Binder binder)
     {
-        binder.bind(LakeVillaConnector.class).in(Scopes.SINGLETON);
-        binder.bind(LakeVillaMetadata.class).in(Scopes.SINGLETON);
-        binder.bind(LakeVillaClient.class).in(Scopes.SINGLETON);
-        binder.bind(LakeVillaSplitManager.class).in(Scopes.SINGLETON);
-        binder.bind(LakeVillaRecordSetProvider.class).in(Scopes.SINGLETON);
         configBinder(binder).bindConfig(LakeVillaConfig.class);
-
-        jsonCodecBinder(binder).bindMapJsonCodec(String.class, listJsonCodec(LakeVillaTable.class));
+        binder.bind(LakeVillaStore.class).in(Scopes.SINGLETON);
+        // caching hook (see LakeVillaCache): bind another implementation to cache schemas or rows
+        binder.bind(LakeVillaCache.class).to(NoOpLakeVillaCache.class).in(Scopes.SINGLETON);
+        binder.bind(LakeVillaTransactionManager.class).in(Scopes.SINGLETON);
+        binder.bind(LakeVillaConnector.class).in(Scopes.SINGLETON);
+        binder.bind(LakeVillaSplitManager.class).in(Scopes.SINGLETON);
+        binder.bind(LakeVillaPageSourceProvider.class).in(Scopes.SINGLETON);
+        binder.bind(LakeVillaPageSinkProvider.class).in(Scopes.SINGLETON);
     }
 }

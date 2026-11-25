@@ -1,0 +1,79 @@
+# Trino with the LakeVilla connector and a MinIO object store.
+#
+#   ./build.sh                    # builds Trino (Maven) and the images
+#   docker compose up -d          # starts MinIO and Trino
+#   docker compose exec trino trino --catalog lakevilla
+#
+# LAKEVILLA_REPO: checkout of the LakeVilla repository (default: next to the
+# Trino repository); the image compiles liblakevilla.so from its LV/src.
+# The stack has no fixed container names; only Trino publishes a host port
+# (TRINO_PORT, default 8080). LV_TRINO_PROJECT (default lv-trino) and
+# LV_TRINO_TAG (image lakevilla/trino:<tag>, default local) allow several
+# stacks (e.g. of other branches) side by side.
+name: ${LV_TRINO_PROJECT:-lv-trino}
+
+services:
+  minio:
+    # MinIO is built from source as in the LakeVilla repository (the official
+    # images were removed from Docker Hub); an existing image is reused
+    build:
+      context: ${LAKEVILLA_REPO:-../../../../LakeVilla}/MinIO
+      target: minio
+    image: lakevilla/minio:RELEASE.2025-09-07T16-13-09Z
+    environment:
+      - MINIO_ROOT_USER=admin
+      - MINIO_ROOT_PASSWORD=password
+    command: ["server", "/data", "--console-address", ":9001"]
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  mc:
+    build:
+      context: ${LAKEVILLA_REPO:-../../../../LakeVilla}/MinIO
+      target: mc
+    image: lakevilla/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    # creates the bucket of the LakeVilla config (BUCKET=warehouse)
+    entrypoint: >
+      /bin/sh -c "
+      until /usr/bin/mc alias set minio http://minio:9000 admin password; do sleep 1; done;
+      /usr/bin/mc mb --ignore-existing minio/warehouse;
+      touch /tmp/ready;
+      tail -f /dev/null
+      "
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/ready"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+
+  trino:
+    build:
+      context: .
+      target: trino
+      additional_contexts:
+        lakevilla: ${LAKEVILLA_REPO:-../../../../LakeVilla}/LV
+    image: lakevilla/trino:${LV_TRINO_TAG:-local}
+    environment:
+      # lakevilla.levels of etc/catalog/lakevilla.properties
+      - LAKEVILLA_LEVELS=${LAKEVILLA_LEVELS:-01}
+      # LakeVilla configuration in etc/lakevilla/ (lakevilla.config-path)
+      - LAKEVILLA_CONFIG=${LAKEVILLA_CONFIG:-lvconfig.conf}
+    depends_on:
+      mc:
+        condition: service_healthy
+    volumes:
+      # configuration (catalogs, lvconfig.conf); changes need a restart only
+      - ./etc:/etc/trino:ro
+    ports:
+      - ${TRINO_PORT:-8080}:8080
+
+volumes:
+  minio-data:

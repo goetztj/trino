@@ -14,8 +14,8 @@
 package io.trino.plugin.lakevilla;
 
 import com.google.inject.Inject;
+import io.trino.spi.NodeManager;
 import io.trino.spi.connector.ConnectorSession;
-import io.trino.spi.connector.ConnectorSplit;
 import io.trino.spi.connector.ConnectorSplitManager;
 import io.trino.spi.connector.ConnectorSplitSource;
 import io.trino.spi.connector.ConnectorTableHandle;
@@ -23,10 +23,7 @@ import io.trino.spi.connector.ConnectorTransactionHandle;
 import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.DynamicFilter;
 import io.trino.spi.connector.FixedSplitSource;
-import io.trino.spi.connector.TableNotFoundException;
 
-import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 
 import static java.util.Objects.requireNonNull;
@@ -34,35 +31,31 @@ import static java.util.Objects.requireNonNull;
 public class LakeVillaSplitManager
         implements ConnectorSplitManager
 {
-    private final LakeVillaClient lakevillaClient;
+    private final NodeManager nodeManager;
+    private final LakeVillaTransactionManager transactionManager;
 
     @Inject
-    public LakeVillaSplitManager(LakeVillaClient lakevillaClient)
+    public LakeVillaSplitManager(NodeManager nodeManager, LakeVillaTransactionManager transactionManager)
     {
-        this.lakevillaClient = requireNonNull(lakevillaClient, "lakevillaClient is null");
+        this.nodeManager = requireNonNull(nodeManager, "nodeManager is null");
+        this.transactionManager = requireNonNull(transactionManager, "transactionManager is null");
     }
 
     @Override
     public ConnectorSplitSource getSplits(
             ConnectorTransactionHandle transaction,
             ConnectorSession session,
-            ConnectorTableHandle connectorTableHandle,
+            ConnectorTableHandle tableHandle,
             DynamicFilter dynamicFilter,
             Constraint constraint)
     {
-        LakeVillaTableHandle tableHandle = (LakeVillaTableHandle) connectorTableHandle;
-        LakeVillaTable table = lakevillaClient.getTable(tableHandle.getSchemaName(), tableHandle.getTableName());
-
-        if (table == null) {
-            throw new TableNotFoundException(tableHandle.toSchemaTableName());
+        LakeVillaTableHandle table = (LakeVillaTableHandle) tableHandle;
+        if (table.keyConstraint().isNone()) {
+            return new FixedSplitSource(List.of());
         }
-
-        List<ConnectorSplit> splits = new ArrayList<>();
-
-        splits.add(new LakeVillaSplit(lakevillaClient.getTablePath(), 0, table.geTableID()));
-
-        Collections.shuffle(splits);
-
-        return new FixedSplitSource(splits);
+        // the snapshot of the table is taken when the query is scheduled
+        transactionManager.get((LakeVillaTransactionHandle) transaction).openTable(table.path());
+        // the LakeVilla transaction lives on this node: the split must run here
+        return new FixedSplitSource(new LakeVillaSplit(table.path(), List.of(nodeManager.getCurrentNode().getHostAndPort())));
     }
 }

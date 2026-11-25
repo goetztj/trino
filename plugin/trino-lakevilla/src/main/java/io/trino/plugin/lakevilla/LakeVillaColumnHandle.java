@@ -13,83 +13,37 @@
  */
 package io.trino.plugin.lakevilla;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.type.Type;
 
-import static com.google.common.base.MoreObjects.toStringHelper;
+import java.util.Optional;
+
 import static java.util.Objects.requireNonNull;
 
-public final class LakeVillaColumnHandle
+/**
+ * A column of a LakeVilla table.
+ *
+ * @param ordinalPosition position of the column in the table schema (0 is the key column of
+ * LakeVilla's key-based operations)
+ */
+public record LakeVillaColumnHandle(String name, Type type, int ordinalPosition, boolean nullable, Optional<String> comment)
         implements ColumnHandle
 {
-    private final String columnName;
-    private final Type columnType;
-    private final int ordinalPosition;
-
-    @JsonCreator
-    public LakeVillaColumnHandle(
-            @JsonProperty("columnName") String columnName,
-            @JsonProperty("columnType") Type columnType,
-            @JsonProperty("ordinalPosition") int ordinalPosition)
+    public LakeVillaColumnHandle
     {
-        this.columnName = requireNonNull(columnName, "columnName is null");
-        this.columnType = requireNonNull(columnType, "columnType is null");
-        this.ordinalPosition = ordinalPosition;
+        requireNonNull(name, "name is null");
+        requireNonNull(type, "type is null");
+        requireNonNull(comment, "comment is null");
     }
 
-    @JsonProperty
-    public String getColumnName()
+    public ColumnMetadata toColumnMetadata()
     {
-        return columnName;
-    }
-
-    @JsonProperty
-    public Type getColumnType()
-    {
-        return columnType;
-    }
-
-    @JsonProperty
-    public int getOrdinalPosition()
-    {
-        return ordinalPosition;
-    }
-
-    public ColumnMetadata getColumnMetadata()
-    {
-        return new ColumnMetadata(columnName, columnType);
-    }
-
-    @Override
-    public int hashCode()
-    {
-        return columnName.hashCode();
-    }
-
-    @Override
-    public boolean equals(Object obj)
-    {
-        if (this == obj) {
-            return true;
-        }
-        if ((obj == null) || (getClass() != obj.getClass())) {
-            return false;
-        }
-
-        LakeVillaColumnHandle other = (LakeVillaColumnHandle) obj;
-        return columnName.equals(other.columnName);
-    }
-
-    @Override
-    public String toString()
-    {
-        return toStringHelper(this)
-                .add("columnName", columnName)
-                .add("columnType", columnType)
-                .add("ordinalPosition", ordinalPosition)
-                .toString();
+        return ColumnMetadata.builder()
+                .setName(name)
+                .setType(type)
+                .setNullable(nullable)
+                .setComment(comment)
+                .build();
     }
 }

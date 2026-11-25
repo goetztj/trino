@@ -15,8 +15,7 @@ package io.trino.plugin.lakevilla;
 
 import com.google.inject.Injector;
 import io.airlift.bootstrap.Bootstrap;
-import io.airlift.json.JsonModule;
-import io.trino.plugin.base.TypeDeserializerModule;
+import io.trino.spi.NodeManager;
 import io.trino.spi.connector.Connector;
 import io.trino.spi.connector.ConnectorContext;
 import io.trino.spi.connector.ConnectorFactory;
@@ -42,8 +41,7 @@ public class LakeVillaConnectorFactory
         checkStrictSpiVersionMatch(context, this);
 
         Bootstrap app = new Bootstrap(
-                new JsonModule(),
-                new TypeDeserializerModule(context.getTypeManager()),
+                binder -> binder.bind(NodeManager.class).toInstance(context.getNodeManager()),
                 new LakeVillaModule());
 
         Injector injector = app

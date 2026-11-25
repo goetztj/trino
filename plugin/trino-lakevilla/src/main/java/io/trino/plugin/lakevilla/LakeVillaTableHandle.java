@@ -13,40 +13,35 @@
  */
 package io.trino.plugin.lakevilla;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
+import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.SchemaTableName;
-
-import java.util.Objects;
+import io.trino.spi.predicate.TupleDomain;
 
 import static java.util.Objects.requireNonNull;
 
-public final class LakeVillaTableHandle
+/**
+ * A LakeVilla table.
+ *
+ * @param path location of the table in the bucket (with a trailing slash)
+ * @param keyConstraint enforced constraint on the key column (the first column): a set of keys
+ * the scan returns and a DELETE removes with LakeVilla's key-based operations; all() for no
+ * constraint
+ */
+public record LakeVillaTableHandle(String schemaName, String tableName, String path, TupleDomain<ColumnHandle> keyConstraint)
         implements ConnectorTableHandle
 {
-    private final String schemaName;
-    private final String tableName;
-
-    @JsonCreator
-    public LakeVillaTableHandle(
-            @JsonProperty("schemaName") String schemaName,
-            @JsonProperty("tableName") String tableName)
+    public LakeVillaTableHandle
     {
-        this.schemaName = requireNonNull(schemaName, "schemaName is null");
-        this.tableName = requireNonNull(tableName, "tableName is null");
+        requireNonNull(schemaName, "schemaName is null");
+        requireNonNull(tableName, "tableName is null");
+        requireNonNull(path, "path is null");
+        requireNonNull(keyConstraint, "keyConstraint is null");
     }
 
-    @JsonProperty
-    public String getSchemaName()
+    public LakeVillaTableHandle(String schemaName, String tableName, String path)
     {
-        return schemaName;
-    }
-
-    @JsonProperty
-    public String getTableName()
-    {
-        return tableName;
+        this(schemaName, tableName, path, TupleDomain.all());
     }
 
     public SchemaTableName toSchemaTableName()
@@ -54,30 +49,14 @@ public final class LakeVillaTableHandle
         return new SchemaTableName(schemaName, tableName);
     }
 
-    @Override
-    public int hashCode()
+    public LakeVillaTableHandle withKeyConstraint(TupleDomain<ColumnHandle> keyConstraint)
     {
-        return Objects.hash(schemaName, tableName);
-    }
-
-    @Override
-    public boolean equals(Object obj)
-    {
-        if (this == obj) {
-            return true;
-        }
-        if ((obj == null) || (getClass() != obj.getClass())) {
-            return false;
-        }
-
-        LakeVillaTableHandle other = (LakeVillaTableHandle) obj;
-        return Objects.equals(this.schemaName, other.schemaName) &&
-                Objects.equals(this.tableName, other.tableName);
+        return new LakeVillaTableHandle(schemaName, tableName, path, keyConstraint);
     }
 
     @Override
     public String toString()
     {
-        return schemaName + ":" + tableName;
+        return schemaName + "." + tableName + (keyConstraint.isAll() ? "" : " " + keyConstraint);
     }
 }

@@ -11,157 +11,124 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package io.trino.plugin.lakevilla;
 
+import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 import io.trino.spi.Page;
+import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.ConnectorPageSink;
-import io.trino.spi.connector.ConnectorTransactionHandle;
+import io.trino.spi.type.Type;
 import org.apache.arrow.memory.BufferAllocator;
-import org.apache.arrow.memory.RootAllocator;
-import org.apache.arrow.vector.Float8Vector;
-import org.apache.arrow.vector.IntVector;
-import org.apache.arrow.vector.VarCharVector;
-import org.apache.arrow.vector.VectorSchemaRoot;
-import org.apache.arrow.vector.ipc.ArrowStreamWriter;
-import org.apache.arrow.vector.types.FloatingPointPrecision;
-import org.apache.arrow.vector.types.pojo.ArrowType;
-import org.apache.arrow.vector.types.pojo.Field;
-import org.apache.arrow.vector.types.pojo.FieldType;
 import org.apache.arrow.vector.types.pojo.Schema;
 
-import java.io.ByteArrayOutputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 
+/**
+ * Writes the rows of INSERT and CREATE TABLE AS as data files of the LakeVilla transaction
+ * (one file per {@code lakevilla.max-rows-per-file} rows). The files become visible when the
+ * transaction commits.
+ */
 public class LakeVillaPageSink
         implements ConnectorPageSink
 {
-    private final LakeVillaTransactionHandle transaction;
-    private final int tableID;
-    private final List<Object[]> buffer = new ArrayList<>();
-    private final BufferAllocator allocator = new RootAllocator(Long.MAX_VALUE);
+    private final LakeVillaTransaction transaction;
+    private final String path;
+    private final Schema schema;
+    private final List<Type> types;
+    private final int maxRowsPerFile;
+    private final BufferAllocator allocator;
 
-    public LakeVillaPageSink(LakeVillaOutputTableHandle handle, ConnectorTransactionHandle transaction)
+    private final List<Page> pages = new ArrayList<>();
+    private int bufferedRows;
+    private long bufferedBytes;
+    private long writtenBytes;
+
+    public LakeVillaPageSink(LakeVillaTransaction transaction, LakeVillaWriteHandle handle, int maxRowsPerFile)
     {
-        this.transaction = (LakeVillaTransactionHandle) transaction;
-        this.tableID = handle.getTableId();
-
-        if (this.transaction.txn == null) {
-            try {
-                this.transaction.txn = new LakeVillaTransactionManager(
-                        handle.getLevels(),
-                        handle.getPath(),
-                        handle.getConfigPath(),
-                        handle.getTransactionId());
-                this.transaction.txn.begin();
-            }
-            catch (Exception e) {
-                throw new RuntimeException(e);
-            }
-        }
-    }
-
-    public void appendRow(Object[] row)
-    {
-        buffer.add(row);
+        this.transaction = requireNonNull(transaction, "transaction is null");
+        this.path = handle.path();
+        List<LakeVillaColumnHandle> columns = handle.columns();
+        // the Arrow fields of the written rows; LakeVilla conforms them to the table schema
+        // (columns are matched by name, missing nullable columns are null)
+        this.schema = LakeVillaTypes.toArrowSchema(columns.stream()
+                .map(column -> ColumnMetadata.builder()
+                        .setName(column.name())
+                        .setType(column.type())
+                        .build())
+                .collect(toImmutableList()));
+        this.types = columns.stream().map(LakeVillaColumnHandle::type).collect(toImmutableList());
+        this.maxRowsPerFile = maxRowsPerFile;
+        this.allocator = LakeVillaArrow.newAllocator("page-sink");
     }
 
     @Override
     public CompletableFuture<?> appendPage(Page page)
     {
-        return completedFuture(null);
+        int offset = 0;
+        while (offset < page.getPositionCount()) {
+            int length = Math.min(page.getPositionCount() - offset, maxRowsPerFile - bufferedRows);
+            Page part = offset == 0 && length == page.getPositionCount() ? page : page.getRegion(offset, length);
+            pages.add(part);
+            bufferedRows += length;
+            bufferedBytes += part.getRetainedSizeInBytes();
+            offset += length;
+            if (bufferedRows >= maxRowsPerFile) {
+                flush();
+            }
+        }
+        return NOT_BLOCKED;
     }
 
     private void flush()
     {
-        if (buffer.isEmpty()) {
+        if (bufferedRows == 0) {
             return;
         }
+        byte[] rows = LakeVillaArrow.toIpc(schema, types, pages, allocator);
+        transaction.addRows(path, rows);
+        writtenBytes += rows.length;
+        pages.clear();
+        bufferedRows = 0;
+        bufferedBytes = 0;
+    }
 
-        try {
-            Object[] firstRow = buffer.get(0);
-            List<Field> fields = new ArrayList<>();
-            for (int i = 0; i < firstRow.length; i++) {
-                Object value = firstRow[i];
-                Field field;
-                if (value instanceof Integer) {
-                    field = new Field("col" + i, FieldType.nullable(new ArrowType.Int(32, true)), null);
-                }
-                else if (value instanceof Double) {
-                    field = new Field("col" + i, FieldType.nullable(new ArrowType.FloatingPoint(FloatingPointPrecision.DOUBLE)), null);
-                }
-                else if (value instanceof String) {
-                    field = new Field("col" + i, FieldType.nullable(new ArrowType.Utf8()), null);
-                }
-                else {
-                    throw new RuntimeException("Unsupported column type: " + value.getClass());
-                }
-                fields.add(field);
-            }
-            Schema schema = new Schema(fields);
+    @Override
+    public long getCompletedBytes()
+    {
+        return writtenBytes;
+    }
 
-            VectorSchemaRoot root = VectorSchemaRoot.create(schema, allocator);
-            root.allocateNew();
-
-            int rowIndex = 0;
-            for (Object[] row : buffer) {
-                for (int colIndex = 0; colIndex < row.length; colIndex++) {
-                    Object value = row[colIndex];
-                    if (value == null) {
-                        root.getVector(colIndex).setNull(rowIndex);
-                    }
-                    else if (value instanceof Integer) {
-                        ((IntVector) root.getVector(colIndex)).setSafe(rowIndex, (Integer) value);
-                    }
-                    else if (value instanceof Double) {
-                        ((Float8Vector) root.getVector(colIndex)).setSafe(rowIndex, (Double) value);
-                    }
-                    else if (value instanceof String) {
-                        ((VarCharVector) root.getVector(colIndex)).setSafe(rowIndex, ((String) value).getBytes(StandardCharsets.UTF_8));
-                    }
-                }
-                rowIndex++;
-            }
-            root.setRowCount(buffer.size());
-
-            ByteArrayOutputStream out = new ByteArrayOutputStream();
-            try (ArrowStreamWriter writer = new ArrowStreamWriter(root, null, out)) {
-                writer.start();
-                writer.writeBatch();
-                writer.end();
-            }
-
-            byte[] arrowBytes = out.toByteArray();
-
-            if (!this.transaction.txn.writeToTable(tableID, arrowBytes)) {
-                System.err.println("failed writing via JNI; have you loaded the library correctly?");
-            }
-            else {
-                buffer.clear();
-            }
-        }
-        catch (Exception e) {
-            throw new RuntimeException("Failed to flush buffer to Arrow stream", e);
-        }
+    @Override
+    public long getMemoryUsage()
+    {
+        return bufferedBytes + allocator.getAllocatedMemory();
     }
 
     @Override
     public CompletableFuture<Collection<Slice>> finish()
     {
-        flush();
-        return completedFuture(null);
+        try {
+            flush();
+        }
+        finally {
+            allocator.close();
+        }
+        return completedFuture(ImmutableList.of());
     }
 
     @Override
     public void abort()
     {
-        buffer.clear();
+        // written data files are not part of the table unless the transaction commits
+        pages.clear();
+        allocator.close();
     }
 }

@@ -13,74 +13,75 @@
  */
 package io.trino.plugin.lakevilla;
 
-import io.trino.spi.connector.ConnectorTransactionHandle;
+import com.google.inject.Inject;
+import io.trino.spi.TrinoException;
+import jakarta.annotation.PreDestroy;
 
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+
+import static io.trino.plugin.lakevilla.LakeVillaErrorCode.LAKEVILLA_TRANSACTION_NOT_FOUND;
+import static java.util.Objects.requireNonNull;
+
+/**
+ * The LakeVilla transactions of the Trino transactions that began on this node.
+ * <p>
+ * A LakeVilla transaction lives in the memory of the node that began it (the coordinator).
+ * Its reads and writes must therefore run on that node: the connector requires a Trino
+ * deployment in which the coordinator also executes tasks
+ * ({@code node-scheduler.include-coordinator=true}, e.g. a single-node server).
+ */
 public class LakeVillaTransactionManager
-        implements AutoCloseable, ConnectorTransactionHandle
 {
-    private long handle;
+    private final LakeVillaStore store;
+    private final LakeVillaCache cache;
+    private final Map<UUID, LakeVillaTransaction> transactions = new ConcurrentHashMap<>();
 
-    private int nextTabeId;
-
-    public LakeVillaTransactionManager(boolean[] levels, String path, String config, int transactionId)
+    @Inject
+    public LakeVillaTransactionManager(LakeVillaStore store, LakeVillaCache cache)
     {
-        handle = createNative(levels, path, config, transactionId);
+        this.store = requireNonNull(store, "store is null");
+        this.cache = requireNonNull(cache, "cache is null");
     }
 
-    public boolean begin()
+    public LakeVillaTransactionHandle begin()
     {
-        return beginTransaction(handle);
+        LakeVillaTransaction transaction = new LakeVillaTransaction(UUID.randomUUID(), store, cache);
+        transactions.put(transaction.uuid(), transaction);
+        return new LakeVillaTransactionHandle(transaction.uuid());
     }
 
-    public void commit(boolean readOnly)
+    public LakeVillaTransaction get(LakeVillaTransactionHandle handle)
     {
-        commitNative(handle, readOnly);
+        LakeVillaTransaction transaction = transactions.get(handle.uuid());
+        if (transaction == null) {
+            throw new TrinoException(LAKEVILLA_TRANSACTION_NOT_FOUND, "LakeVilla transaction %s is not known on this node: the LakeVilla connector runs the reads and writes of a transaction on the node that began it; use a single-node Trino or set node-scheduler.include-coordinator=true"
+                    .formatted(handle.uuid()));
+        }
+        return transaction;
     }
 
-    public byte[] readTable(int tableId, int numThreads)
+    public void commit(LakeVillaTransactionHandle handle)
     {
-        return readTableAsBytes(handle, tableId);
-    }
-
-    public int openNewTable(String path)
-    {
-        nextTabeId++;
-        openTable(path);
-        return nextTabeId;
-    }
-
-    public boolean writeToTable(int tableId, byte[] arrowTable)
-    {
-        return writeToTableNative(handle, tableId, arrowTable);
-    }
-
-    @Override
-    public void close()
-    {
-        if (handle != 0) {
-            destroyNative(handle);
-            handle = 0;
+        LakeVillaTransaction transaction = transactions.remove(handle.uuid());
+        if (transaction != null) {
+            transaction.commit();
         }
     }
 
-    // Native methods
-    private native long createNative(boolean[] levels, String path, String configPath, int transactionId);
+    public void rollback(LakeVillaTransactionHandle handle)
+    {
+        LakeVillaTransaction transaction = transactions.remove(handle.uuid());
+        if (transaction != null) {
+            transaction.rollback();
+        }
+    }
 
-    private native void destroyNative(long handle);
-
-    private native long readTable(long handle, int tableId, int numThreads);
-
-    private native byte[] readTableAsBytes(long handle, int tableId);
-
-    private native boolean beginTransaction(long handle);
-
-    private native boolean writeToTableNative(long handle, int tableId, byte[] arrowTable);
-
-    private native void commitNative(long handle, boolean readOnly);
-
-    private native void openTable(String path);
-
-    static {
-        LakeVillaLoader.loadLibrary();
+    @PreDestroy
+    public void shutdown()
+    {
+        transactions.values().forEach(LakeVillaTransaction::rollback);
+        transactions.clear();
     }
 }

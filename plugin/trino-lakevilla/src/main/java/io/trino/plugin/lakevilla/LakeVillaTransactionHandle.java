@@ -15,15 +15,19 @@ package io.trino.plugin.lakevilla;
 
 import io.trino.spi.connector.ConnectorTransactionHandle;
 
-public class LakeVillaTransactionHandle
+import java.util.UUID;
+
+import static java.util.Objects.requireNonNull;
+
+/**
+ * A Trino transaction; its LakeVilla transaction is kept by {@link LakeVillaTransactionManager}
+ * on the node that began it (handles are serialized and sent to the tasks).
+ */
+public record LakeVillaTransactionHandle(UUID uuid)
         implements ConnectorTransactionHandle
 {
-    public LakeVillaTransactionManager txn;
-
-    public boolean readOnly;
-
-    LakeVillaTransactionHandle(boolean readOnly)
+    public LakeVillaTransactionHandle
     {
-        this.readOnly = readOnly;
+        requireNonNull(uuid, "uuid is null");
     }
 }
